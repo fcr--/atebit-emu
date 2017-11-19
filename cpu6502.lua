@@ -15,6 +15,12 @@ end
 local function updateNegative(val, p)
     return bit32.band(val, 0x80) ~= 0 and bit32.bor(p, FLAG_N) or bit32.band(p, FLAG_NN)
 end
+local function updateOverflow(val, p)
+    return (val < -128 or val > 127) and bit32.bor(p, FLAG_V) or bit32.band(p, FLAG_NV)
+end
+local function updateCarry(val, p)
+    return bit32.band(val, 0x100) ~= 0 and bit32.bor(p, FLAG_C) or bit32.band(p, FLAG_NC)
+end
 
 local function read16(memory, addr)
     return bit32.bor(memory:read(addr), bit32.lshift(memory:read(addr + 1), 8))
@@ -27,6 +33,41 @@ local function readWrap16(memory, addr, byte)
     return bit32.bor(memory:read(addr), bit32.lshift(memory:read(addr + 1), 8))
 end
 
+local signExtendByte
+if bit and bit.arshift then -- luajit
+    signExtendByte = function(n) return bit.arshift(bit.lshift(n, 24), 24) end
+else -- everything else:
+    signExtendByte = function(n)
+        n = bit32.band(n, 0xFF)
+        return bit32.band(n, 0x80) ~= 0 and n - 256 or n
+    end
+end
+
+local function adcImplementation(cpu, src)
+    local a, p = 0, cpu.p
+    -- decimal mode is a b*tch, sources:
+    -- http://nesdev.com/6502.txt
+    -- http://6502.org/tutorials/decimal_mode.html
+    if bit32.band(p, FLAG_D) == FLAG_D then
+        a = cpu.a + src + bit32.band(p, 1) -- plus carry
+        if bit32.band(cpu.a, 0xf) + bit32.band(src, 0xf) + bit32.band(p, 1) > 9 then
+            a = a + 6
+        end
+        p = updateOverflow(a, updateNegative(a, p))
+        if a > 0x99 then
+            a = a + 96
+            p = bit32.bor(p, FLAG_C)
+        else
+            p = bit32.band(p, FLAG_NC)
+        end
+    else
+        -- addition is carried on sign extended operands
+        a = signExtendByte(cpu.a) + signExtendByte(src) + bit32.band(p, 1) -- plus carry
+        p = updateOverflow(a, updateNegative(a, updateCarry(cpu.a + src + bit32.band(p, 1), p)))
+    end
+    cpu.a = bit32.band(a, 0xFF)
+    cpu.p = updateZero(cpu.a, p)
+end
 
 function Cpu:new(params)
     return setmetatable({
@@ -44,7 +85,7 @@ end
 function fmt(fmt, mut)
     return function(cpu, data)
         if mut == 'signExtendByte' then
-            data = bit32.arshift(bit32.lshift(data, 24), 24)
+            data = signExtendByte(data)
         end
         return string.format(fmt, data)
     end
@@ -56,18 +97,16 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.pc = read16(cpu.memory, 0xFFFE)
     end, 1, 7},
     [0x01] = {fmt = fmt 'ORA ($%02x, X) ; pre indexed indirect', function(cpu, data)
-        local a = bit32.bor(cpu.a, cpu.memory:read(readWrap16(cpu.memory, bit32.band(cpu.x + data, 0xFF))))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, cpu.memory:read(readWrap16(cpu.memory, bit32.band(cpu.x + data, 0xFF))))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
         if bit32.band(data, 0xFF) + cpu.x >= 0x100 then cpu.cycles = cpu.cycles + 1 end
     end, 2, 6},
     -- [0x02] invalid
     -- [0x03] invalid
     -- [0x04] invalid
     [0x05] = {fmt = fmt 'ORA $%02x ; zp', function(cpu, data)
-        local a = bit32.bor(cpu.a, cpu.memory:read(data))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, cpu.memory:read(data))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 2, 3},
     [0x06] = {fmt = fmt 'ASL $%02x ; zp', function(cpu, data)
         local m, p = cpu.memory:read(data), cpu.p
@@ -82,9 +121,8 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.s = bit32.band(cpu.s - 1, 0xFF)
     end, 1, 3},
     [0x09] = {fmt = fmt 'ORA #$%02x ; imm', function(cpu, data)
-        local a = bit32.bor(cpu.a, data)
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, data)
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 2, 2},
     [0x0A] = {fmt = fmt 'ASL', function(cpu, data)
         local a, p = cpu.a, cpu.p
@@ -96,9 +134,8 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     -- [0x0B] invalid
     -- [0x0C] invalid
     [0x0D] = {fmt = fmt 'ORA $%04x ; absolute', function(cpu, data)
-        local a = bit32.bor(cpu.a, cpu.memory:read(data))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, cpu.memory:read(data))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 3, 4},
     [0x0E] = {fmt = fmt 'ASL $%04x ; absolute', function(cpu, data)
         local m, p = cpu.memory:read(data), cpu.p
@@ -110,7 +147,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     -- [0x0F] invalid
     [0x10] = {fmt = fmt('BPL %d ; relative', 'signExtendByte'); function(cpu, data)
         if bit32.band(cpu.p, FLAG_N) == 0 then
-            local pc = bit32.band(cpu.pc + bit32.arshift(bit32.lshift(data, 24), 24), 0xFFFF)
+            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
             cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
             cpu.pc = pc
         end
@@ -189,10 +226,11 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 2, 3},
     [0x26] = {fmt = fmt 'ROL $%02x ; zp', function(cpu, data)
-        -- assert(FLAG_C == 1)
         local m = bit32.bor(bit32.lshift(cpu.memory:read(data), 1), bit32.band(cpu.p, FLAG_C))
         cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(m, 8))
-        cpu.memory:write(data, bit32.band(m, 0xFF))
+        m = bit32.band(m, 0xFF)
+        cpu.p = updateNegative(m, updateZero(m, cpu.p))
+        cpu.memory:write(data, m)
     end, 2, 5},
     -- [0x27] invalid
     [0x28] = {fmt = fmt 'PLP', function(cpu)
@@ -203,11 +241,11 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.a = bit32.band(cpu.a, data)
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 2, 2},
-    [0x2A] = {fmt = fmt 'ROL A', function(cpu)
-        -- assert(FLAG_C == 1)
+    [0x2A] = {fmt = fmt 'ROL', function(cpu)
         local a = bit32.bor(bit32.lshift(cpu.a, 1), bit32.band(cpu.p, FLAG_C))
         cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(a, 8))
         cpu.a = bit32.band(a, 0xFF)
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 1, 2},
     -- [0x2B] invalid
     [0x2C] = {fmt = fmt 'BIT $%04x ; absolute', function(cpu, data)
@@ -221,20 +259,46 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 3, 4},
     [0x2E] = {fmt = fmt 'ROL $%04x ; absolute', function(cpu, data)
-        -- assert(FLAG_C == 1)
         local m = bit32.bor(bit32.lshift(cpu.memory:read(data), 1), bit32.band(cpu.p, FLAG_C))
-        cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(m, 8))
-        cpu.memory:write(data, bit32.band(m, 0xFF))
+        local p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(m, 8))
+        m = bit32.band(m, 0xFF)
+        cpu.p = updateNegative(m, updateZero(m, p))
+        cpu.memory:write(data, m)
     end, 3, 6},
     -- [0x2F] invalid
+    [0x45] = {fmt = fmt 'EOR $%02x ; zp', function(cpu, data)
+        cpu.a = bit32.bxor(cpu.a, cpu.memory:read(data))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
+    end, 2, 3},
     [0x58] = {fmt = fmt 'CLI', function(cpu)
         cpu.p = bit32.band(cpu.p, FLAG_NI)
     end, 1, 2},
+    [0x60] = {fmt = fmt 'RTS', function(cpu)
+        cpu.s = bit32.band(cpu.s + 2, 0xFF)
+        cpu.pc = bit32.band(readWrap16(cpu.memory, bit32.bor(0x100, bit32.band(cpu.s-1, 0xFF))) + 1, 0xFFFF)
+    end, 1, 6},
+    [0x65] = {fmt = fmt 'ADC $%02x ; zp', function(cpu, data)
+        return adcImplementation(cpu, cpu.memory:read(data))
+    end, 2, 3},
+    [0x66] = {fmt = fmt 'ROR $%02x ; zp', function(cpu, data)
+        local oldcarry = bit32.band(cpu.p, 1)
+        local m = cpu.memory:read(data)
+        cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.band(m, 1))
+        m = bit32.bor(bit32.rshift(m, 1), bit32.lshift(oldcarry, 7))
+        cpu.p = updateNegative(m, updateZero(m, cpu.p))
+        cpu.memory:write(data, m)
+    end, 2, 5},
     [0x68] = {fmt = fmt 'PLA', function(cpu)
         cpu.s = bit32.band(cpu.s + 1, 0xFF)
         cpu.a = cpu.memory:read(bit32.bor(0x100, cpu.s))
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 1, 4},
+    [0x6A] = {fmt = fmt 'ROR', function(cpu)
+        local oldcarry = bit32.band(cpu.p, 1)
+        cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.band(cpu.a, 1))
+        cpu.a = bit32.bor(bit32.rshift(cpu.a, 1), bit32.lshift(oldcarry, 7))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
+    end, 1, 2},
     [0x85] = {fmt = fmt 'STA $%02x ; zp', function(cpu, data)
         cpu.memory:write(data, cpu.a)
     end, 2, 3},
@@ -245,6 +309,13 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.a = cpu.x
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 1, 2},
+    [0x90] = {fmt = fmt('BCC %d ; relative', 'signExtendByte'); function(cpu, data)
+        if bit32.band(cpu.p, FLAG_C) == 0 then
+            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
+            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
+            cpu.pc = pc
+        end
+    end, 2, 2},
     [0x98] = {fmt = fmt 'TYA', function(cpu)
         cpu.a = cpu.y
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
@@ -268,9 +339,13 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.y = bit32.band(cpu.y + 1, 0xFF)
         cpu.p = updateNegative(cpu.y, updateZero(cpu.y, cpu.p))
     end, 1, 2},
+    [0xCA] = {fmt = fmt 'DEX', function(cpu)
+        cpu.x = bit32.band(cpu.x - 1, 0xFF)
+        cpu.p = updateNegative(cpu.x, updateZero(cpu.x, cpu.p))
+    end, 1, 2},
     [0xD0] = {fmt = fmt('BNE %d ; relative', 'signExtendByte'); function(cpu, data)
         if bit32.band(cpu.p, FLAG_Z) == 0 then
-            local pc = bit32.band(cpu.pc + bit32.arshift(bit32.lshift(data, 24), 24), 0xFFFF)
+            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
             cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
             cpu.pc = pc
         end
@@ -286,7 +361,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     end, 1, 2},
     [0xF0] = {fmt = fmt('BEQ %d ; relative', 'signExtendByte'); function(cpu, data)
         if bit32.band(cpu.p, FLAG_Z) == FLAG_Z then
-            local pc = bit32.band(cpu.pc + bit32.arshift(bit32.lshift(data, 24), 24), 0xFFFF)
+            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
             cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
             cpu.pc = pc
         end

@@ -33,6 +33,7 @@ function CpuTest.run()
     -- this computer has 16 pages of $1000 bytes (4kB) each,
     local rom = Memory.Rom:new(assemble[[
     * = $e000
+        cld
     test1: .( // test 1: simple load & store
             lda #1
             sta $2a
@@ -62,6 +63,32 @@ function CpuTest.run()
         on: inx ; should be 3
             stx $2a
     .)
+    test4: .(
+        num1 = $0
+        num2 = $1
+            lda #$ce
+            ldx #$f7
+            sta num1
+            stx num2
+            jsr mult
+            eor num1 ; xoring low and high bytes should give 4
+            sta $2a
+            bne test5 ; branch always
+        mult: // a:num1 = (num1 * num2)
+              // ref: http://codebase64.org/doku.php?id=base:short_8bit_multiplication_16bit_product
+            lda #0
+            ldx #8
+            clc
+        m0: bcc m1
+            clc
+            adc num2
+        m1: ror
+            ror num1
+            dex
+            bpl m0
+            rts
+    .)
+    test5:
     .dsb $fffe - *
     .word test1
     ]]) -- rom will be located at $e000-$ffff and
@@ -81,10 +108,13 @@ function CpuTest.run()
     local tests = {
         function() end, -- nothing to check in first test
         function() end, -- nothing to check in inc test
-        function() end, -- nothing to check in inc test
+        function() end, -- nothing to check in flags test
+        function() end, -- nothing to check in multiplication test
     }
     while nextTest <= #tests do
-        --print(('$%04x'):format(cpu.pc), cpu:dissassemble())
+        -- print(('A:%02x, X:%02x, Y:%02x, S:%02x, PC:%04x, P:%02x, ram:[%02x %02x]')
+        --         :format(cpu.a, cpu.x, cpu.y, cpu.s, cpu.pc, cpu.p, cpu.memory:read(0), cpu.memory:read(1)),
+        --     cpu:dissassemble())
         cpu:step()
         if completedTest then
             assert(completedTest == bit32.band(nextTest, 0xff),
