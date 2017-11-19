@@ -108,10 +108,10 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.p = updateNegative(m, updateZero(m, p))
     end, 3, 6},
     -- [0x0F] invalid
-    [0x10] = {fmt = fmt('BPL %d ; relative', 'signExtendByte'); function(cpu, data) -- BPL relative
+    [0x10] = {fmt = fmt('BPL %d ; relative', 'signExtendByte'); function(cpu, data)
         if bit32.band(cpu.p, FLAG_N) == 0 then
             local pc = bit32.band(cpu.pc + bit32.arshift(bit32.lshift(data, 24), 24), 0xFFFF)
-            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 3 or 1)
+            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
             cpu.pc = pc
         end
     end, 2, 2},
@@ -169,8 +169,8 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     -- [0x1F] invalid
     [0x20] = {fmt = fmt 'JSR $%04x ; absolute', function(cpu, data)
 	local pc = cpu.pc - 1
-	cpu.memory:write(0x100 + cpu.s, bit32.rshift(pc, 8))
-	cpu.memory:write(0x100 + bit32.band(cpu.s-1, 0xFF), bit32.band(pc, 0xFF))
+	cpu.memory:write(bit32.bor(0x100, cpu.s), bit32.rshift(pc, 8))
+	cpu.memory:write(bit32.bor(0x100, bit32.band(cpu.s-1, 0xFF)), bit32.band(pc, 0xFF))
 	cpu.s = bit32.band(cpu.s - 2, 0xFF)
 	cpu.pc = data
     end, 3, 6},
@@ -183,12 +183,27 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     -- [0x22] invalid
     -- [0x23] invalid
     [0x24] = {fmt = fmt 'BIT $%02x ; zp', function(cpu, data)
-    end},
+        local m = cpu.memory:read(data)
+        local MASK = bit32.bor(FLAG_N, FLAG_V)
+        local NMASK = bit32.bxor(0xFF, MASK)
+        cpu.p = updateNegative(bit32.band(cpu.a, m), bit32.bor(bit32.band(m, MASK), bit32.band(cpu.p, NMASK)))
+    end, 2, 3},
+    [0x29] = {fmt = fmt 'AND #$%02x ; imm', function(cpu, data)
+        cpu.a = bit32.band(cpu.a, data)
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
+    end, 2, 2},
     [0x58] = {fmt = fmt 'CLI', function(cpu)
         cpu.p = bit32.band(cpu.p, FLAG_NI)
     end, 1, 2},
+    [0x68] = {fmt = fmt 'PLA', function(cpu)
+        cpu.s = bit32.band(cpu.s + 1, 0xFF)
+        cpu.a = cpu.memory:read(bit32.bor(0x100, cpu.s))
+    end, 1, 4},
     [0x85] = {fmt = fmt 'STA $%02x ; zp', function(cpu, data)
         cpu.memory:write(data, cpu.a)
+    end, 2, 3},
+    [0x86] = {fmt = fmt 'STX $%02x ; zp', function(cpu, data)
+        cpu.memory:write(data, cpu.x)
     end, 2, 3},
     [0x8A] = {fmt = fmt 'TXA', function(cpu)
         cpu.a = cpu.x
@@ -217,6 +232,13 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.y = bit32.band(cpu.y + 1, 0xFF)
         cpu.p = updateNegative(cpu.y, updateZero(cpu.y, cpu.p))
     end, 1, 2},
+    [0xD0] = {fmt = fmt('BNE %d ; relative', 'signExtendByte'); function(cpu, data)
+        if bit32.band(cpu.p, FLAG_Z) == 0 then
+            local pc = bit32.band(cpu.pc + bit32.arshift(bit32.lshift(data, 24), 24), 0xFFFF)
+            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
+            cpu.pc = pc
+        end
+    end, 2, 2},
     [0xD8] = {fmt = fmt 'CLD', function(cpu)
         cpu.p = bit32.band(cpu.p, FLAG_ND)
     end, 1, 2},
@@ -225,6 +247,16 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.p = updateNegative(cpu.x, updateZero(cpu.x, cpu.p))
     end, 1, 2},
     [0xEA] = {fmt = fmt 'NOP', function(cpu)
+    end, 1, 2},
+    [0xF0] = {fmt = fmt('BEQ %d ; relative', 'signExtendByte'); function(cpu, data)
+        if bit32.band(cpu.p, FLAG_Z) == FLAG_Z then
+            local pc = bit32.band(cpu.pc + bit32.arshift(bit32.lshift(data, 24), 24), 0xFFFF)
+            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
+            cpu.pc = pc
+        end
+    end, 2, 2},
+    [0xF8] = {fmt = fmt 'SED', function(cpu)
+        cpu.p = bit32.bor(cpu.p, FLAG_D)
     end, 1, 2},
 }
 
