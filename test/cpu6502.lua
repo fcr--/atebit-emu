@@ -4,6 +4,8 @@ local IoChips = require 'iochips'
 
 local CpuTest = {}
 
+local bit32 = _G.bit32 or require 'bit32'
+
 local function assemble(code)
     local file = assert(io.popen('/bin/mktemp', 'r'))
     local outfile = file:read'*l'
@@ -30,7 +32,7 @@ end
 function CpuTest.run()
     -- this computer has 16 pages of $1000 bytes (4kB) each,
     local rom = Memory.Rom:new(assemble[[
-    * = $f000
+    * = $e000
     test1: .( // test 1: simple load & store
             lda #1
             sta $2a
@@ -62,8 +64,8 @@ function CpuTest.run()
     .)
     .dsb $fffe - *
     .word test1
-    ]]) -- rom will be located at $f000-$ffff and
-    local ram = Memory.Ram:new(4096) -- ram at $0000 - $0fff
+    ]]) -- rom will be located at $e000-$ffff and
+    local ram = Memory.Ram:new(8192) -- ram at $0000 - $1fff
     local out = {}
     local completedTest = nil
     -- overriding ram metatable:
@@ -74,7 +76,7 @@ function CpuTest.run()
         if addr == 0x2a then completedTest = byte end
         return Memory.Ram.write(self, addr, byte)
     end
-    local cpu = Cpu:new{ memory = Memory.Mapper:new(4096, {[0]={ram}, {debug}, [15]={rom}})}
+    local cpu = Cpu:new{ memory = Memory.Mapper:new(8192, {[0]={ram}, [7]={rom}})}
     local nextTest = 1
     local tests = {
         function() end, -- nothing to check in first test
@@ -85,10 +87,10 @@ function CpuTest.run()
         --print(('$%04x'):format(cpu.pc), cpu:dissassemble())
         cpu:step()
         if completedTest then
-            assert(completedTest == nextTest, ('test must be run in order, got $%02x expecting $%02x'):format(
-                completedTest, nextTest))
+            assert(completedTest == bit32.band(nextTest, 0xff),
+                ('test must be run in order, got $%02x expecting $%02x'):format(completedTest, nextTest))
             tests[completedTest]()
-            nextTest = completedTest + 1
+            nextTest = nextTest + 1
             completedTest = nil
         end
     end

@@ -2,7 +2,7 @@ local Cpu = {}
 Cpu.__index = Cpu
 
 local unpack = _G.unpack or table.unpack
-local bit32 = _G.bit32 or _G.bit
+local bit32 = _G.bit32 or require 'bit32'
 
 local FLAG_N, FLAG_V, FLAG_B, FLAG_D, FLAG_I, FLAG_Z, FLAG_C = 0x80, 0x40, 0x10, 0x8, 0x4, 0x2, 0x1
 local FLAG_NN, FLAG_NV, FLAG_NB, FLAG_ND, FLAG_NI, FLAG_NZ, FLAG_NC = 0x7F, 0xBF, 0xEF, 0xF7, 0xFB, 0xFD, 0xFE
@@ -55,7 +55,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.p = bit32.bor(cpu.p, FLAG_B)
         cpu.pc = read16(cpu.memory, 0xFFFE)
     end, 1, 7},
-    [0x01] = {fmt = fmt 'ORA ($%02x, X) ; indirect', function(cpu, data)
+    [0x01] = {fmt = fmt 'ORA ($%02x, X) ; pre indexed indirect', function(cpu, data)
         local a = bit32.bor(cpu.a, cpu.memory:read(readWrap16(cpu.memory, bit32.band(cpu.x + data, 0xFF))))
         cpu.a = a
         cpu.p = updateNegative(a, updateZero(a, cpu.p))
@@ -115,7 +115,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
             cpu.pc = pc
         end
     end, 2, 2},
-    [0x11] = {fmt = fmt 'ORA ($%02x), Y ; indirect', function(cpu, data)
+    [0x11] = {fmt = fmt 'ORA ($%02x), Y ; post indexed indirect', function(cpu, data)
         local base = readWrap16(cpu.memory, data)
         local a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(base + cpu.y, 0xFFFF)))
         cpu.a = a
@@ -126,9 +126,8 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     -- [0x13] invalid
     -- [0x14] invalid
     [0x15] = {fmt = fmt 'ORA $%02x, X ; zp', function(cpu, data)
-        local a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(data + cpu.x, 0xFF)))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(data + cpu.x, 0xFF)))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 2, 4},
     [0x16] = {fmt = fmt 'ASL $%02x, X ; zp', function(cpu, data)
         local addr = bit32.band(data + cpu.x, 0xFF)
@@ -143,22 +142,20 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.p = bit32.band(cpu.p, FLAG_NC)
     end, 1, 2},
     [0x19] = {fmt = fmt 'ORA $%04x, Y ; absolute', function(cpu, data)
-        local a = bit32.bor(cpu.a, read16(cpu.memory, data + cpu.y))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(data + cpu.y, 0xffff)))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
         if bit32.band(data, 0xFF) + cpu.y >= 0x100 then cpu.cycles = cpu.cycles + 1 end
     end, 3, 4},
     -- [0x1A] invalid
     -- [0x1B] invalid
     -- [0x1C] invalid
     [0x1D] = {fmt = fmt 'ORA %04x, X ; absolute', function(cpu, data)
-        local a = bit32.bor(cpu.a, read16(cpu.memory, data + cpu.x))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(data + cpu.x, 0xffff)))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
         if bit32.band(data, 0xFF) + cpu.x >= 0x100 then cpu.cycles = cpu.cycles + 1 end
     end, 3, 4},
     [0x1E] = {fmt = fmt 'ASL $%04x, X ; absolute', function(cpu, data)
-        local addr = bit32.band(data + cpu.x, 0xFF)
+        local addr = bit32.band(data + cpu.x, 0xFFFF)
         local m, p = cpu.memory:read(addr), cpu.p
         p = bit32.band(m, 0x80) ~= 0 and bit32.bor(p, FLAG_C) or bit32.band(p, FLAG_NC)
         m = bit32.band(bit32.lshift(m, 1), 0xFF)
@@ -174,10 +171,9 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
 	cpu.s = bit32.band(cpu.s - 2, 0xFF)
 	cpu.pc = data
     end, 3, 6},
-    [0x21] = {fmt = fmt 'AND ($%02x, X) ; indirect', function(cpu, data)
-        local a = bit32.band(cpu.a, cpu.memory:read(readWrap16(cpu.memory, bit32.band(cpu.x + data, 0xFF))))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+    [0x21] = {fmt = fmt 'AND ($%02x, X) ; pre indexed indirect', function(cpu, data)
+        cpu.a = bit32.band(cpu.a, cpu.memory:read(readWrap16(cpu.memory, bit32.band(cpu.x + data, 0xFF))))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
         if bit32.band(data, 0xFF) + cpu.x >= 0x100 then cpu.cycles = cpu.cycles + 1 end
     end, 2, 6},
     -- [0x22] invalid
@@ -196,18 +192,48 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         -- assert(FLAG_C == 1)
         local m = bit32.bor(bit32.lshift(cpu.memory:read(data), 1), bit32.band(cpu.p, FLAG_C))
         cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(m, 8))
-        cpu.memory.write(data, bit32.band(m, 0xFF))
+        cpu.memory:write(data, bit32.band(m, 0xFF))
     end, 2, 5},
+    -- [0x27] invalid
+    [0x28] = {fmt = fmt 'PLP', function(cpu)
+        cpu.s = bit32.band(cpu.s + 1, 0xFF)
+        cpu.p = cpu.memory:read(bit32.bor(0x100, cpu.s))
+    end, 1, 4},
     [0x29] = {fmt = fmt 'AND #$%02x ; imm', function(cpu, data)
         cpu.a = bit32.band(cpu.a, data)
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 2, 2},
+    [0x2A] = {fmt = fmt 'ROL A', function(cpu)
+        -- assert(FLAG_C == 1)
+        local a = bit32.bor(bit32.lshift(cpu.a, 1), bit32.band(cpu.p, FLAG_C))
+        cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(a, 8))
+        cpu.a = bit32.band(a, 0xFF)
+    end, 1, 2},
+    -- [0x2B] invalid
+    [0x2C] = {fmt = fmt 'BIT $%04x ; absolute', function(cpu, data)
+        local m = cpu.memory:read(data)
+        local MASK = bit32.bor(FLAG_N, FLAG_V)
+        local NMASK = bit32.bxor(0xFF, MASK)
+        cpu.p = updateNegative(bit32.band(cpu.a, m), bit32.bor(bit32.band(m, MASK), bit32.band(cpu.p, NMASK)))
+    end, 3, 4},
+    [0x2D] = {fmt = fmt 'AND $%04x ; absolute', function(cpu, data)
+        cpu.a = bit32.band(cpu.a, cpu.memory:read(data))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
+    end, 3, 4},
+    [0x2E] = {fmt = fmt 'ROL $%04x ; absolute', function(cpu, data)
+        -- assert(FLAG_C == 1)
+        local m = bit32.bor(bit32.lshift(cpu.memory:read(data), 1), bit32.band(cpu.p, FLAG_C))
+        cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(m, 8))
+        cpu.memory:write(data, bit32.band(m, 0xFF))
+    end, 3, 6},
+    -- [0x2F] invalid
     [0x58] = {fmt = fmt 'CLI', function(cpu)
         cpu.p = bit32.band(cpu.p, FLAG_NI)
     end, 1, 2},
     [0x68] = {fmt = fmt 'PLA', function(cpu)
         cpu.s = bit32.band(cpu.s + 1, 0xFF)
         cpu.a = cpu.memory:read(bit32.bor(0x100, cpu.s))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 1, 4},
     [0x85] = {fmt = fmt 'STA $%02x ; zp', function(cpu, data)
         cpu.memory:write(data, cpu.a)
