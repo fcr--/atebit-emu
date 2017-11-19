@@ -154,9 +154,8 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     end, 2, 2},
     [0x11] = {fmt = fmt 'ORA ($%02x), Y ; post indexed indirect', function(cpu, data)
         local base = readWrap16(cpu.memory, data)
-        local a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(base + cpu.y, 0xFFFF)))
-        cpu.a = a
-        cpu.p = updateNegative(a, updateZero(a, cpu.p))
+        cpu.a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(base + cpu.y, 0xFFFF)))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
         if bit32.band(base, 0xFF) + cpu.y >= 0x100 then cpu.cycles = cpu.cycles + 1 end
     end, 2, 5},
     -- [0x12] invalid
@@ -277,6 +276,9 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.s = bit32.band(cpu.s + 2, 0xFF)
         cpu.pc = bit32.band(readWrap16(cpu.memory, bit32.bor(0x100, bit32.band(cpu.s-1, 0xFF))) + 1, 0xFFFF)
     end, 1, 6},
+    [0x61] = {fmt = fmt 'ADC ($%02x, X) ; pre indexed indirect', function(cpu, data)
+        return adcImplementation(cpu, cpu.memory:read(readWrap16(cpu.memory, bit32.band(cpu.x + data, 0xFF))))
+    end, 2, 6},
     [0x65] = {fmt = fmt 'ADC $%02x ; zp', function(cpu, data)
         return adcImplementation(cpu, cpu.memory:read(data))
     end, 2, 3},
@@ -293,12 +295,32 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.a = cpu.memory:read(bit32.bor(0x100, cpu.s))
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 1, 4},
+    [0x69] = {fmt = fmt 'ADC #$%02x ; imm', adcImplementation, 2, 2},
     [0x6A] = {fmt = fmt 'ROR', function(cpu)
         local oldcarry = bit32.band(cpu.p, 1)
         cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.band(cpu.a, 1))
         cpu.a = bit32.bor(bit32.rshift(cpu.a, 1), bit32.lshift(oldcarry, 7))
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 1, 2},
+    [0x6D] = {fmt = fmt 'ADC $%04x ; absolute', function(cpu, data)
+        return adcImplementation(cpu, cpu.memory:read(data))
+    end, 3, 4},
+    [0x71] = {fmt = fmt 'ADC ($%02x), Y ; post indexed indirect', function(cpu, data)
+        local base = readWrap16(cpu.memory, data)
+        if bit32.band(base, 0xFF) + cpu.y >= 0x100 then cpu.cycles = cpu.cycles + 1 end
+        return adcImplementation(cpu, cpu.memory:read(bit32.band(base + cpu.y, 0xFFFF)))
+    end, 2, 5},
+    [0x75] = {fmt = fmt 'ADC $%02x, X ; x in zp', function(cpu, data)
+        return adcImplementation(cpu, cpu.memory:read(bit32.band(cpu.x + data, 0xFF)))
+    end, 2, 4},
+    [0x79] = {fmt = fmt 'ADC $%02x, Y ; absolute + y', function(cpu, data)
+        if bit32.band(data, 0xFF) + cpu.y >= 0x100 then cpu.cycles = cpu.cycles + 1 end
+        return adcImplementation(cpu, cpu.memory:read(bit32.band(cpu.y + data, 0xFFFF)))
+    end, 3, 4},
+    [0x7D] = {fmt = fmt 'ADC $%02x, X ; absolute + x', function(cpu, data)
+        if bit32.band(data, 0xFF) + cpu.x >= 0x100 then cpu.cycles = cpu.cycles + 1 end
+        return adcImplementation(cpu, cpu.memory:read(bit32.band(cpu.x + data, 0xFFFF)))
+    end, 3, 4},
     [0x85] = {fmt = fmt 'STA $%02x ; zp', function(cpu, data)
         cpu.memory:write(data, cpu.a)
     end, 2, 3},
