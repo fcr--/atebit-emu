@@ -188,6 +188,16 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         local NMASK = bit32.bxor(0xFF, MASK)
         cpu.p = updateNegative(bit32.band(cpu.a, m), bit32.bor(bit32.band(m, MASK), bit32.band(cpu.p, NMASK)))
     end, 2, 3},
+    [0x25] = {fmt = fmt 'AND $%02x ; zp', function(cpu, data)
+        cpu.a = bit32.band(cpu.a, cpu.memory:read(data))
+        cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
+    end, 2, 3},
+    [0x26] = {fmt = fmt 'ROL $%02x ; zp', function(cpu, data)
+        -- assert(FLAG_C == 1)
+        local m = bit32.bor(bit32.lshift(cpu.memory:read(data), 1), bit32.band(cpu.p, FLAG_C))
+        cpu.p = bit32.bor(bit32.band(cpu.p, FLAG_NC), bit32.rshift(m, 8))
+        cpu.memory.write(data, bit32.band(m, 0xFF))
+    end, 2, 5},
     [0x29] = {fmt = fmt 'AND #$%02x ; imm', function(cpu, data)
         cpu.a = bit32.band(cpu.a, data)
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
