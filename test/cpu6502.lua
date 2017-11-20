@@ -89,8 +89,8 @@ function CpuTest.run()
             rts
     .)
     test5:
-    .dsb $fffe - *
-    .word test1
+    .dsb $fffc - *
+    .word test1, test1
     ]]) -- rom will be located at $e000-$ffff and
     local ram = Memory.Ram:new(8192) -- ram at $0000 - $1fff
     local out = {}

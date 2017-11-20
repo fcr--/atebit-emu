@@ -69,6 +69,17 @@ local function adcImplementation(cpu, src)
     cpu.p = updateZero(cpu.a, p)
 end
 
+local function branchGen(flag, state)
+    local value = state and flag or 0
+    return function(cpu, data)
+        if bit32.band(cpu.p, flag) == value then
+            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
+            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
+            cpu.pc = pc
+        end
+    end
+end
+
 function Cpu:new(params)
     return setmetatable({
         memory = params.memory,
@@ -76,7 +87,7 @@ function Cpu:new(params)
         x = 0,
         y = 0,
         s = 0xFF, -- stack pointer
-        pc = read16(params.memory, 0xFFFE),
+        pc = read16(params.memory, 0xFFFC),
         p = 0x20, -- flags
         cycles = 0
     }, self)
@@ -145,13 +156,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.p = updateNegative(m, updateZero(m, p))
     end, 3, 6},
     -- [0x0F] invalid
-    [0x10] = {fmt = fmt('BPL %d ; relative', 'signExtendByte'); function(cpu, data)
-        if bit32.band(cpu.p, FLAG_N) == 0 then
-            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
-            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
-            cpu.pc = pc
-        end
-    end, 2, 2},
+    [0x10] = {fmt = fmt('BPL %d ; relative', 'signExtendByte'), branchGen(FLAG_N, false), 2, 2},
     [0x11] = {fmt = fmt 'ORA ($%02x), Y ; post indexed indirect', function(cpu, data)
         local base = readWrap16(cpu.memory, data)
         cpu.a = bit32.bor(cpu.a, cpu.memory:read(bit32.band(base + cpu.y, 0xFFFF)))
@@ -265,10 +270,12 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.memory:write(data, m)
     end, 3, 6},
     -- [0x2F] invalid
+    [0x30] = {fmt = fmt('BMI %d ; relative', 'signExtendByte'), branchGen(FLAG_N, true), 2, 2},
     [0x45] = {fmt = fmt 'EOR $%02x ; zp', function(cpu, data)
         cpu.a = bit32.bxor(cpu.a, cpu.memory:read(data))
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 2, 3},
+    [0x50] = {fmt = fmt('BVC %d ; relative', 'signExtendByte'), branchGen(FLAG_V, false), 2, 2},
     [0x58] = {fmt = fmt 'CLI', function(cpu)
         cpu.p = bit32.band(cpu.p, FLAG_NI)
     end, 1, 2},
@@ -305,6 +312,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     [0x6D] = {fmt = fmt 'ADC $%04x ; absolute', function(cpu, data)
         return adcImplementation(cpu, cpu.memory:read(data))
     end, 3, 4},
+    [0x70] = {fmt = fmt('BVS %d ; relative', 'signExtendByte'), branchGen(FLAG_V, true), 2, 2},
     [0x71] = {fmt = fmt 'ADC ($%02x), Y ; post indexed indirect', function(cpu, data)
         local base = readWrap16(cpu.memory, data)
         if bit32.band(base, 0xFF) + cpu.y >= 0x100 then cpu.cycles = cpu.cycles + 1 end
@@ -331,13 +339,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.a = cpu.x
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
     end, 1, 2},
-    [0x90] = {fmt = fmt('BCC %d ; relative', 'signExtendByte'); function(cpu, data)
-        if bit32.band(cpu.p, FLAG_C) == 0 then
-            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
-            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
-            cpu.pc = pc
-        end
-    end, 2, 2},
+    [0x90] = {fmt = fmt('BCS %d ; relative', 'signExtendByte'), branchGen(FLAG_C, false), 2, 2},
     [0x98] = {fmt = fmt 'TYA', function(cpu)
         cpu.a = cpu.y
         cpu.p = updateNegative(cpu.a, updateZero(cpu.a, cpu.p))
@@ -354,6 +356,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.a = data
         cpu.p = updateNegative(data, updateZero(data, cpu.p))
     end, 2, 2},
+    [0xB0] = {fmt = fmt('BCS %d ; relative', 'signExtendByte'), branchGen(FLAG_C, true), 2, 2},
     [0xB8] = {fmt = fmt 'CLV', function(cpu)
         cpu.p = bit32.band(cpu.p, FLAG_NV)
     end, 1, 2},
@@ -365,13 +368,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
         cpu.x = bit32.band(cpu.x - 1, 0xFF)
         cpu.p = updateNegative(cpu.x, updateZero(cpu.x, cpu.p))
     end, 1, 2},
-    [0xD0] = {fmt = fmt('BNE %d ; relative', 'signExtendByte'); function(cpu, data)
-        if bit32.band(cpu.p, FLAG_Z) == 0 then
-            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
-            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
-            cpu.pc = pc
-        end
-    end, 2, 2},
+    [0xD0] = {fmt = fmt('BNE %d ; relative', 'signExtendByte'), branchGen(FLAG_Z, false), 2, 2},
     [0xD8] = {fmt = fmt 'CLD', function(cpu)
         cpu.p = bit32.band(cpu.p, FLAG_ND)
     end, 1, 2},
@@ -381,13 +378,7 @@ local decodeRom = { -- opcode->{code, bytes, cycles}
     end, 1, 2},
     [0xEA] = {fmt = fmt 'NOP', function(cpu)
     end, 1, 2},
-    [0xF0] = {fmt = fmt('BEQ %d ; relative', 'signExtendByte'); function(cpu, data)
-        if bit32.band(cpu.p, FLAG_Z) == FLAG_Z then
-            local pc = bit32.band(cpu.pc + signExtendByte(data), 0xFFFF)
-            cpu.cycles = cpu.cycles + (page(cpu.pc) ~= page(pc) and 2 or 1)
-            cpu.pc = pc
-        end
-    end, 2, 2},
+    [0xF0] = {fmt = fmt('BEQ %d ; relative', 'signExtendByte'), branchGen(FLAG_Z, true), 2, 2},
     [0xF8] = {fmt = fmt 'SED', function(cpu)
         cpu.p = bit32.bor(cpu.p, FLAG_D)
     end, 1, 2},
